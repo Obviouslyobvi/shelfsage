@@ -1,5 +1,4 @@
 export const runtime = "nodejs";
-import Anthropic from "@anthropic-ai/sdk";
 
 export async function POST(request) {
   try {
@@ -7,7 +6,7 @@ export async function POST(request) {
 
     if (!books || books.length === 0) {
       return Response.json(
-        { error: "No books provided. Add some books to your library first." },
+        { error: "No books provided." },
         { status: 400 }
       );
     }
@@ -15,76 +14,73 @@ export async function POST(request) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey || apiKey === "your-key-here") {
       return Response.json(
-        {
-          error:
-            "ANTHROPIC_API_KEY is not configured. Add your key to .env.local and restart the server.",
-        },
+        { error: "ANTHROPIC_API_KEY is not configured." },
         { status: 500 }
       );
     }
 
-    const client = new Anthropic({ apiKey });
-
     const bookList = books
-      .map((b, i) => `${i + 1}. "${b.title}" by ${b.author}`)
+      .slice(0, 50)
+      .map((b) => `- "${b.title}" by ${b.author}`)
       .join("\n");
 
-    const prompt = `You are a literary recommendation engine. A reader has shared their reading history below. Analyze their taste and recommend exactly 5 books they have NOT already read.
+    const prompt = `You are ShelfSage, an expert book recommendation engine. Analyze the reader's library and recommend exactly 5 books they would love.
 
-READER'S LIBRARY:
+Their library:
 ${bookList}
 
-RECOMMENDATION VIBE: ${vibe}
-READING FOCUS: ${focus}
+Recommendation vibe: ${vibe}
+Focus on: ${focus}
 
-Instructions:
-1. Identify patterns in their reading: genres, themes, writing styles, time periods, and narrative preferences.
-2. Based on the vibe "${vibe}" and focus "${focus}", select 5 books that fit. Each book must be a real, published book.
-3. Do NOT recommend any book already in their library.
-4. For each recommendation, explain specifically WHY it matches this reader's taste and the selected vibe/focus.
+Respond with ONLY a valid JSON array of 5 objects. No markdown, no code fences. Each object: "title", "author", "reason" (2-3 sentences referencing their books), "genre", "match_score" (1-10).`;
 
-Respond with ONLY valid JSON in this exact format, no other text:
-{
-  "recommendations": [
-    {
-      "title": "Book Title",
-      "author": "Author Name",
-      "genre": "Genre",
-      "match_score": 8,
-      "reason": "A specific 2-3 sentence explanation of why this matches their reading patterns and the selected vibe/focus."
-    }
-  ]
-}
-
-match_score is 1-10 where 10 means a perfect match for this reader's taste combined with the vibe and focus settings.`;
-
-    const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1500,
-      messages: [{ role: "user", content: prompt }],
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 2048,
+        messages: [{ role: "user", content: prompt }],
+      }),
     });
 
-    const text = message.content[0].text;
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("Claude API error:", response.status, errText);
+      return Response.json(
+        { error: "Failed to get recommendations." },
+        { status: 500 }
+      );
+    }
 
-    let parsed;
+    const data = await response.json();
+    const text = data.content?.[0]?.text || "";
+
+    let recommendations;
     try {
-      parsed = JSON.parse(text);
+      recommendations = JSON.parse(text);
     } catch {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        parsed = JSON.parse(jsonMatch[0]);
+      const match = text.match(/\[[\s\S]*\]/);
+      if (match) {
+        recommendations = JSON.parse(match[0]);
       } else {
-        throw new Error("Failed to parse recommendation response as JSON.");
+        return Response.json(
+          { error: "Could not parse recommendations." },
+          { status: 500 }
+        );
       }
     }
 
-    return Response.json(parsed);
+    return Response.json({ recommendations });
   } catch (err) {
-    console.error("Recommendation error:", err);
-    const message =
-      err instanceof Anthropic.APIError
-        ? `Claude API error: ${err.message}`
-        : err.message || "Something went wrong generating recommendations.";
-    return Response.json({ error: message }, { status: 500 });
+    console.error("Error:", err);
+    return Response.json(
+      { error: "Something went wrong." },
+      { status: 500 }
+    );
   }
 }
