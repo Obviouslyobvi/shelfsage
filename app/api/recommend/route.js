@@ -1,3 +1,4 @@
+export const runtime = "nodejs";
 import Anthropic from "@anthropic-ai/sdk";
 
 export async function POST(request) {
