@@ -1,10 +1,51 @@
 export const runtime = "nodejs";
 
+// Per-IP limit so a script cannot run up the Anthropic bill. This map lives
+// in the server process; on serverless hosts each instance keeps its own
+// count, which still blunts abuse but is not a hard global cap.
+const WINDOW_MS = 10 * 60 * 1000;
+const MAX_PER_WINDOW = 10;
+const hits = new Map();
+
+function tooManyRequests(ip) {
+  const now = Date.now();
+  const entry = hits.get(ip);
+  if (!entry || now - entry.start > WINDOW_MS) {
+    hits.set(ip, { start: now, count: 1 });
+    if (hits.size > 5000) hits.clear();
+    return false;
+  }
+  entry.count += 1;
+  return entry.count > MAX_PER_WINDOW;
+}
+
+const MAX_BOOKS = 50;
+const MAX_FIELD = 200;
+const clean = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
+
 export async function POST(request) {
   try {
-    const { books, vibe, focus } = await request.json();
+    const ip =
+      request.headers.get("x-forwarded-for")?.split(",")[0].trim() ||
+      request.headers.get("x-real-ip") ||
+      "unknown";
+    if (tooManyRequests(ip)) {
+      return Response.json(
+        { error: "Too many requests. Please wait a few minutes and try again." },
+        { status: 429 }
+      );
+    }
 
-    if (!books || books.length === 0) {
+    const body = await request.json();
+    const rawBooks = Array.isArray(body?.books) ? body.books : [];
+    const books = rawBooks
+      .slice(0, MAX_BOOKS)
+      .map((b) => ({ title: clean(b?.title, MAX_FIELD), author: clean(b?.author, MAX_FIELD) }))
+      .filter((b) => b.title);
+    const vibe = clean(body?.vibe, 100);
+    const focus = clean(body?.focus, 100);
+
+    if (books.length === 0) {
       return Response.json(
         { error: "No books provided." },
         { status: 400 }
@@ -20,7 +61,6 @@ export async function POST(request) {
     }
 
     const bookList = books
-      .slice(0, 50)
       .map((b) => `- "${b.title}" by ${b.author}`)
       .join("\n");
 
